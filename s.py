@@ -6,6 +6,8 @@ app = Flask(__name__, static_folder="./static", template_folder="./template")
 import pandas as pd
 import random
 import numpy
+import numpy as np
+from numpy import linalg
 
 traid_traname = pd.read_csv("traid_traname.csv")
 traid_traname.reset_index(inplace=False)
@@ -29,7 +31,8 @@ def json_response(func):
 
 def random_recommend(info):
     size = int(info['num'])
-    return {'recommend': traid_traname.loc[random.sample(traid_size, size)]['s2'].tolist()}
+    return {'recommend': traid_traname.loc[random.sample(traid_size, size)]['s2'].tolist(),
+            'artist': random.sample(list(aid_artname.values()), size)}
 
 
 def get_user_vec_by_history(history) -> dict:  # save memory
@@ -56,6 +59,12 @@ with open("sid_seq.data", "rb") as f:
         sid_tid[sid] = tid
         song_name_id[sid] = tid_sname[tid]
 
+with open("sid_aid.data", "rb") as f:
+    sid_aid = pickle.load(f)
+
+with open("aid_artname.data", "rb") as f:
+    aid_artname = pickle.load(f)
+
 
 def get_user_songs(users):
     res = []
@@ -75,7 +84,7 @@ def distance(v1, v2):
     return dist
 
 
-def get_user_dis(user_vec, k=3):
+def get_user_dis(user_vec, k=10):
     res = {}
     for u, v in uid_sid.items():
         res[u] = distance(user_vec, v)
@@ -87,14 +96,68 @@ def knn_recommend(info):
     gender, age, country, signup, num, history = info['gender'], info['age'], info['country'], info['signup'], info['num'], info['history']
     user_vec = get_user_vec_by_history(history)
     users= get_user_dis(user_vec)
+    return return_res(users, user_vec, num)
+
+
+def return_res(users, user_vec, num):
     songs = [s for s in get_user_songs(users) if s not in user_vec]
+    artist = [sid_aid[s] for s in songs]
+    artist = list(set(artist))
+    user_artist = [sid_aid[s] for s in user_vec]
+    artist = [x for x in artist if x not in user_artist]
+    artist = [aid_artname[a] for a in artist]
     result = [song_name_id[s] for s in songs]
-    return {'recommend': result[:min(len(result), int(num))]}
+    return {'recommend': result[:min(len(result), int(num))], 'artist': artist[:min(len(artist), int(num))]}
+
+
+def load_svd():
+    with open("dd1.data", "rb") as f:
+        m = pickle.load(f)
+    import scipy.sparse
+    from sparsesvd import sparsesvd
+    smat = scipy.sparse.csc_matrix(m)
+    ut, s, vt = sparsesvd(smat, 10000)
+    # with open("ut.data", "wb") as f:
+    #     pickle.dump(ut, f)
+    # with open("s.data", "wb") as f:
+    #     pickle.dump(s, f)
+    # with open("vt.data", "wb") as f:
+    #     pickle.dump(vt, f, protocol=4)
+    return ut, s, vt
+
+
+def cos(a, b):
+    # a = a[:10]
+    # b = b[:10]
+    aa = a / linalg.norm(a)
+    bb = b / linalg.norm(b)
+    return np.arccos(np.clip(np.dot(aa, bb), -1, 1))
+
+
+ut, s, vt = load_svd()
+
+
+def svd_recommend(info):
+    gender, age, country, signup, num, history = info['gender'], info['age'], info['country'], info['signup'], info[
+        'num'], info['history']
+    user_vec = get_user_vec_by_history(history)
+    uuu = [user_vec[i] if i in user_vec else 0 for i in range(len(sid_tid))]
+    user_vec1 = numpy.matrix([uuu])
+    u = user_vec1 * vt.T
+    u = np.squeeze(np.asarray(u))
+    d = {}
+    for i in range(ut.shape[0]):
+        uh = numpy.array(ut[i])
+        d[i] = cos(u, uh)
+    res = list(sorted(d.items(), key=lambda x: x[1]))[:10]
+    users = [x[0] for x in res]
+    return return_res(users, user_vec, num)
 
 
 AL = {
     'random': random_recommend,
     'knn': knn_recommend,
+    'svd': svd_recommend,
 }
 
 
